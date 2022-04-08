@@ -1,0 +1,1154 @@
+From 8b6d327eb84272683c06a6259d7fd5b3331045f1 Mon Sep 17 00:00:00 2001
+From: ManuelaB <manuela.buchner@maibornwolff.de>
+Date: Fri, 8 Apr 2022 10:32:41 +0200
+Subject: [PATCH] Add MQTT Sparkplug functionality
+
+---
+ MQTT_Functions.scl | 635 ++++++++++++++++++++++-----------------------
+ MQTT_Receiving.scl |  88 ++++---
+ MQTT_Sending.scl   |  66 ++---
+ 3 files changed, 391 insertions(+), 398 deletions(-)
+
+diff --git a/MQTT_Functions.scl b/MQTT_Functions.scl
+index 72e1c37..87dae9d 100644
+--- a/MQTT_Functions.scl
++++ b/MQTT_Functions.scl
+@@ -1,53 +1,145 @@
+-﻿(*
+-    TODO:
+-    - connect method: handle reset of message ID according to cleanSessio flag
++﻿FUNCTION "Unixtime" : DWord
++{ S7_Optimized_Access := 'FALSE' }
++VERSION : 0.1
++   VAR_TEMP 
++      leapyears : Int;
++      days_from_1970 : DInt;
++      days_from_BeginOfYear : Array[0..11] of Int;
++      l_unixtime : DInt;
++      sfc1_ret_val : Int;
++      CDT_systemtime : Date_And_Time;
++      systemtime AT CDT_systemtime : Struct
++         year_CDT : Byte;
++         month_CDT : Byte;
++         day_CDT : Byte;
++         hour_CDT : Byte;
++         minute_CDT : Byte;
++         second_CDT : Byte;
++      END_STRUCT;
++      year : Int;
++      month : Int;
++      day : Int;
++      hour : Int;
++      minute : Int;
++      second : Int;
++   END_VAR
++
+ 
+-*)
++BEGIN
++	#leapyears := 0;
++	#days_from_1970 := 0;
++	
++	// days of current month without leap day
++	
++	#days_from_BeginOfYear[0] := 0;
++	#days_from_BeginOfYear[1] := 31;
++	#days_from_BeginOfYear[2] := 59;
++	#days_from_BeginOfYear[3] := 90;
++	#days_from_BeginOfYear[4] := 120;
++	#days_from_BeginOfYear[5] := 151;
++	#days_from_BeginOfYear[6] := 181;
++	#days_from_BeginOfYear[7] := 212;
++	#days_from_BeginOfYear[8] := 243;
++	#days_from_BeginOfYear[9] := 273;
++	#days_from_BeginOfYear[10] := 304;
++	#days_from_BeginOfYear[11] := 334;
++	
++	
++	// read system time
++	#sfc1_ret_val := RD_SYS_T(OUT => #CDT_systemtime);
++	#year := BCD16_TO_INT(#systemtime.year_CDT) + 2000;
++	#month := BCD16_TO_INT(#systemtime.month_CDT);
++	#day := BCD16_TO_INT(#systemtime.day_CDT);
++	#hour := BCD16_TO_INT(#systemtime.hour_CDT);
++	#minute := BCD16_TO_INT(#systemtime.minute_CDT);
++	#second := BCD16_TO_INT(#systemtime.second_CDT);
++	
++	
++	// sum of leap years since 1979 (without current leap year)
++	#leapyears := ((#year - 1) - 1968) / 4
++	- ((#year - 1) - 1900) / 100
++	+ ((#year - 1) - 1600) / 400;
++	
++	
++	#days_from_1970 := (#year - 1970) * 365 + #leapyears
++	+ #days_from_BeginOfYear[#month] + #day - 1;
++	
++	IF ((#month > 2) AND ((#year MOD 4 = 0) AND ((#year MOD 100 <> 0) OR (#year MOD 400 = 0)))) THEN
++	    #days_from_1970 := #days_from_1970 + 1; // + leap day, if year is leap year
++	END_IF;
++	
++	// OUTPUT in s
++	#l_unixtime := #second + 60 * (#minute + 60 * (#hour + 24 * #days_from_1970));
++	
++	
++	// if error return 0
++	IF #sfc1_ret_val <> 0 THEN
++	    #Unixtime := 0;
++	ELSE
++	    #Unixtime := DINT_TO_DWORD(#l_unixtime);
++	END_IF;
++	
++	
++END_FUNCTION
+ 
+ FUNCTION "mqttGetNextMessageID" : Int
+-TITLE = 'MQTT Message ID Generator'
+ { S7_Optimized_Access := 'TRUE' }
+ AUTHOR : Brand
+ VERSION : 1.0
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
++
+ 
+ BEGIN
+-	  "mqttData".nextMsgId := "mqttData".nextMsgId + 1;
++	    #mqttData.nextMsgId := #mqttData.nextMsgId + 1;
+ 	  
+-	  IF ("mqttData".nextMsgId <= 0) THEN
+-	    "mqttData".nextMsgId := 1;
++	    IF (#mqttData.nextMsgId <= 0) THEN
++	        #mqttData.nextMsgId := 1;
+ 	  END_IF;
+ 	  
+-	  #mqttGetNextMessageID := "mqttData".nextMsgId;
++	  #mqttGetNextMessageID := #mqttData.nextMsgId;
++	  
+ 	  
+ END_FUNCTION
+ 
++FUNCTION "mqttPUBACK" : Void
++{ S7_Optimized_Access := 'FALSE' }
++AUTHOR : Brand
++VERSION : 1.0
++   VAR_INPUT 
++      packetIdMSB : Byte;
++      packetIdLSB : Byte;
++   END_VAR
++
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
+ 
+ 
+-(*
+-   ***********************************************************************
+-   MQtt connect method
+-   Please refer to http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html, section 3.1 CONNECT
+-   ***********************************************************************
+-*)
++BEGIN
++	    #mqttData.buffer[0] := INT_TO_BYTE("mqttGlobals".MQTTPUBACK);
++	    #mqttData.buffer[1] := 2;
++	    #mqttData.buffer[2] := #packetIdMSB;
++	    #mqttData.buffer[3] := #packetIdLSB;
++	  "mqttSendTCP"(offset := 0,
++	                size := 4,
++	                mqttData:=#mqttData);
++	  #mqttData.lastOutActivity := #mqttData.runTime;
++	  
++	  
++END_FUNCTION
++
+ FUNCTION "mqttCONNECT" : Void
+-TITLE = 'MQTT Connect Function'
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
+-//ported by Groschke to TIA V13
+    VAR_INPUT 
+-      clientID : String;
+-      withUsername : Bool;
+-      withPassword : Bool;
+-      cleanSession : Bool;
+-      withWill : Bool;
+-      willQos : Int;
+-      willRetain : Bool;
+-      willTopic : String;
+-      willPayload : Any;
+-      willPayloadLength : Int;
+-      username : String;
+-      password : String;
++      mqttParameters : "MqttParUdt";
++   END_VAR
++
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
+    END_VAR
+ 
+    VAR_TEMP 
+@@ -70,13 +162,13 @@ VERSION : 1.0
+ 
+ 
+ BEGIN
+-	#l_clientID := #clientID;
+-	#l_username := #username;
+-	#l_password := #password;
++	#l_clientID := #mqttParameters.mqttClientID;
++	#l_username := #mqttParameters.mqttUsername;
++	#l_password := #mqttParameters.mqttPassword;
+ 	
+ 	#result := 0;
+ 	
+-	"mqttData".nextMsgId := 1; // set next message ID to 1 because we started a new clean(!) session
++	#mqttData.nextMsgId := 1; // set next message ID to 1 because we started a new clean(!) session
+ 	
+ 	#length := 5;
+ 	#d[0] := B#16#00;
+@@ -89,309 +181,119 @@ BEGIN
+ 	
+ 	// header
+ 	FOR #j := 0 TO 6 DO
+-	  "mqttData".buffer[#length] := #d[#j];
++	    #mqttData.buffer[#length] := #d[#j];
+ 	  #length := #length + 1;
+ 	END_FOR;
+ 	
+ 	// Set Flags for username and password, cleanSession,
+-	"mqttData".buffer[#length] := 0;
+-	"mqttData".buffer[#length] := "mqttData".buffer[#length] OR SHL(IN := BOOL_TO_BYTE(#withUsername), N := 7) OR SHL(IN := BOOL_TO_BYTE(#withPassword), N := 6) OR SHL(IN := BOOL_TO_BYTE(#cleanSession), N := 1);
++	#mqttData.buffer[#length] := 0;
++	#mqttData.buffer[#length] := #mqttData.buffer[#length] OR SHL(IN := BOOL_TO_BYTE(#mqttParameters.mqttWithUsername), N := 7) OR SHL(IN := BOOL_TO_BYTE(#mqttParameters.mqttWithPassword), N := 6) OR SHL(IN := BOOL_TO_BYTE(#mqttParameters.mqttCleanSession), N := 1);
+ 	
+ 	// set all will flags and will qos if with will
+-	IF #withWill = true THEN
+-	  "mqttData".buffer[#length] := "mqttData".buffer[#length] OR SHL(IN := BOOL_TO_BYTE(#willRetain), N := 5) OR SHL(IN := BOOL_TO_BYTE(#withWill), N := 2);
+-	  IF #willQos = "mqttGlobals".MQTTQOS1 THEN
+-	    "mqttData".buffer[#length] := "mqttData".buffer[#length] OR SHL(IN := BOOL_TO_BYTE(true), N := 3);
++	IF #mqttParameters.mqttWithWill = true THEN
++	    #mqttData.buffer[#length] := #mqttData.buffer[#length] OR SHL(IN := BOOL_TO_BYTE(#mqttParameters.mqttWillRetain), N := 5) OR SHL(IN := BOOL_TO_BYTE(#mqttParameters.mqttWithWill), N := 2);
++	    IF #mqttParameters.mqttWillQos = "mqttGlobals".MQTTQOS1 THEN
++	        #mqttData.buffer[#length] := #mqttData.buffer[#length] OR SHL(IN := BOOL_TO_BYTE(true), N := 3);
+ 	  END_IF;
+-	  IF #willQos = "mqttGlobals".MQTTQOS2 THEN
+-	    "mqttData".buffer[#length] := "mqttData".buffer[#length] OR SHL(IN := BOOL_TO_BYTE(true), N := 4);
++	  IF #mqttParameters.mqttWillQos = "mqttGlobals".MQTTQOS2 THEN
++	      #mqttData.buffer[#length] := #mqttData.buffer[#length] OR SHL(IN := BOOL_TO_BYTE(true), N := 4);
+ 	  END_IF;
+ 	END_IF;
+ 	
+ 	#length := #length + 1;
+ 	
+ 	// timeout - TIME_TO_DINT gives ms
+-	"mqttData".buffer[#length] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(TIME_TO_DINT("mqttGlobals".MQTT_KEEPALIVE) / 1000), N := 8));
++	#mqttData.buffer[#length] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(TIME_TO_DINT("mqttGlobals".MQTT_KEEPALIVE) / 1000), N := 8));
+ 	#length := #length + 1;
+-	"mqttData".buffer[#length] := DINT_TO_BYTE(TIME_TO_DINT("mqttGlobals".MQTT_KEEPALIVE) / 1000);
++	#mqttData.buffer[#length] := DINT_TO_BYTE(TIME_TO_DINT("mqttGlobals".MQTT_KEEPALIVE) / 1000);
+ 	#length := #length + 1;
+ 	
+ 	#length := "mqttWriteString"(str := #l_clientID,
+-	                           pos := #length);
++	                             pos := #length, mqttData:=#mqttData);
+ 	
+ 	
+-	IF #withWill = true THEN
++	IF #mqttParameters.mqttWithWill = true THEN
+ 	  // copy will topic to buffer
+-	  #l_willTopic := #willTopic;
++	    #l_willTopic := #mqttParameters.mqttWillTopic;
+ 	  
+ 	  #length := "mqttWriteString"(str := #l_willTopic,
+-	                             pos := #length);
++	                               pos := #length, mqttData:=#mqttData);
+ 	  
+ 	  // copy payload to buffer
+ 	  //ptrBuffer := mqttData.buffer[length];
+-	  #ptrWillPayload := #willPayload;
++	
+ 	  
+-	  IF #willPayloadLength > 0 THEN
+-	    FOR #i := 0 TO #willPayloadLength - 1 DO
+-	      #ret := BLKMOV(SRCBLK := #ptrWillPayload, DSTBLK => "mqttData".buffer[#length]);
+-	      // what is this?!
+-	      IF #ret <> 0 THEN
+-	        //m23.2 := true;
+-	        //return
+-	        ;
+-	      END_IF;
+-	      #length := #length + 1;
+-	      #structWillPtrPayload.ByteAddressLSB := INT_TO_WORD(WORD_TO_INT(#structWillPtrPayload.ByteAddressLSB) + 8);
+-	    END_FOR;
++	  IF #mqttParameters.mqttWithWill = TRUE THEN
++	      #length := "mqttWriteString"(str := #mqttParameters.mqttWillData,
++	                                   pos := #length, mqttData:=#mqttData);
+ 	  ELSE
+ 	    // if no will payload (willPayloadLength=0) we have to set the two payload length bytes to 0
+-	    "mqttData".buffer[#length] := 0;
++	      #mqttData.buffer[#length] := 0;
+ 	    #length := #length + 1;
+-	    "mqttData".buffer[#length] := 0;
++	    #mqttData.buffer[#length] := 0;
+ 	    #length := #length + 1;
+ 	  END_IF;
+ 	END_IF;
+ 	
+ 	// username
+-	IF #withUsername = true THEN
++	IF #mqttParameters.mqttWithUsername = true THEN
+ 	  
+ 	  #length := "mqttWriteString"(str := #l_username,
+-	                             pos := #length);
++	                               pos := #length, mqttData:=#mqttData);
+ 	END_IF;
+ 	// password
+-	IF #withPassword = true THEN
++	IF #mqttParameters.mqttWithPassword = true THEN
+ 	  #length := "mqttWriteString"(str := #l_password,
+-	                             pos := #length);
++	                               pos := #length, mqttData:=#mqttData);
+ 	END_IF;
+ 	
+ 	// set package type in header
+ 	#fixedHeader := INT_TO_BYTE("mqttGlobals".MQTTCONNECT);
+ 	
+ 	// write connect header
+-	"mqttWrite"(header := #fixedHeader, length := #length-5);
++	"mqttWrite"(header := #fixedHeader,
++	            length := #length - 5,
++	            mqttData:=#mqttData);
++	
+ 	
++	#mqttData.lastInActivity := #mqttData.runTime;
++	#mqttData.lastOutActivity := #mqttData.lastInActivity;
+ 	
+-	"mqttData".lastInActivity := "mqttData".runTime;
+-	"mqttData".lastOutActivity := "mqttData".lastInActivity;
++	#mqttData._state := "mqttGlobals".MQTT_CONNECTING;
+ 	
+-	"mqttData"._state := "mqttGlobals".MQTT_CONNECTING;
+ END_FUNCTION
+-(**************************************************************)
+ 
+-
+-(* 
+-   **********************************************************************************
+-   MQtt connect method - simple version for convinience usage
+-   **********************************************************************************
+-*)
+-FUNCTION "mqttSimpleCONNECT" : Void
+-TITLE = 'MQTT Connect Function (basic parameters)'
++FUNCTION "mqttDISCONNECT" : Void
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
+-//ported by Groschke to TIA V13
+-   VAR_INPUT 
+-      clientID : String;
+-      cleanSession : Bool;
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
+    END_VAR
+ 
+-   VAR_TEMP 
+-      l_clientID : String[23];
+-      l_cleanSession : Bool;
+-   END_VAR
+-
+-
+-BEGIN
+-	  #l_clientID := #clientID;
+-	  #l_cleanSession := #cleanSession;
+-	  
+-	  "mqttCONNECT"(clientID := #l_clientID,
+-	                withUsername := false,
+-	                withPassword := false,
+-	                cleanSession := #l_cleanSession,
+-	                withWill := false,
+-	                willQos := 0,
+-	                willRetain := 0,
+-	                willTopic := '',
+-	                willPayload := NULL,
+-	                willPayloadLength := 0,
+-	                username := '',
+-	                password := '');
+-	  
+-END_FUNCTION
+-(**************************************************************)
+-
+-
+-(*
+-   **********************************************************************************
+-   MQtt disconnect method
+-   Please refer to http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html
+-   Section 3.14 DISCONNECT - disconnect notification
+-   **********************************************************************************
+-*)
+-FUNCTION "mqttDISCONNECT" : Void
+-TITLE = 'MQTT Disconnect Function'
+-{ S7_Optimized_Access := 'FALSE' }
+-AUTHOR : Brand
+-VERSION : 1.0
+-//ported by Groschke to TIA V13
+ 
+ BEGIN
+-	  "mqttData".buffer[0] := INT_TO_BYTE("mqttGlobals".MQTTDISCONNECT);
+-	  "mqttData".buffer[1] := 0;
++	    #mqttData.buffer[0] := INT_TO_BYTE("mqttGlobals".MQTTDISCONNECT);
++	    #mqttData.buffer[1] := 0;
+ 	  "mqttSendTCP"(offset := 0,
+-	                size := 2);
+-	  "mqttData".lastOutActivity := "mqttData".runTime;
+-	  "mqttData"._state := "mqttGlobals".MQTT_DISCONNECTED;
++	                size := 2,
++	                mqttData:=#mqttData);
++	  #mqttData.lastOutActivity := #mqttData.runTime;
++	  #mqttData._state := "mqttGlobals".MQTT_DISCONNECTED;
++	  
+ 	  
+ END_FUNCTION
+ 
+-
+-(*
+-   **********************************************************************************
+-   MQtt subscribe method
+-   Please refer to http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html
+-   Section 3.8 PUBLISH - subscribe message
+-   **********************************************************************************
+-*)
+-FUNCTION "mqttSUBSCRIBE" : Void
+-TITLE = 'MQTT Subscribe Function'
+-{ S7_Optimized_Access := 'TRUE' }
+-AUTHOR : Brand
+-VERSION : 1.0
+-//ported by Groschke to TIA V13
+-   VAR_INPUT 
+-      topic : String;
+-      topicQos : Int;   // QoS Level 0,1,2
+-   END_VAR
+-
+-   VAR_TEMP 
+-      length : Int;
+-      l_topic : String[50];
+-      thisMessageID : Int;
+-   END_VAR
+-
+-
+-BEGIN
+-	
+-	// if there's no MQTT connection return
+-	IF "mqttData"._state = "mqttGlobals".MQTT_DISCONNECTED THEN
+-	  RETURN;
+-	END_IF;
+-	
+-	#l_topic := #topic;
+-	
+-	// check if topic is not longer than 119 bytes
+-	IF (128 < (9 + LEN(#l_topic))) THEN
+-	  RETURN;
+-	END_IF;
+-	
+-	#length := 5;
+-	
+-	// set message ID
+-	#thisMessageID := "mqttGetNextMessageID"();
+-	"mqttData".buffer[#length] := DWORD_TO_BYTE(SHR(IN := INT_TO_DWORD(#thisMessageID), N := 8));
+-	#length := #length + 1;
+-	"mqttData".buffer[#length] := INT_TO_BYTE(#thisMessageID) AND B#16#FF;
+-	#length := #length + 1;
+-	
+-	// set topic                
+-	#length := "mqttWriteString"(str := #l_topic, pos := #length);
+-	
+-	// set topic qos
+-	"mqttData".buffer[#length] := INT_TO_BYTE(#topicQos);
+-	#length := #length + 1;
+-	
+-	// write header and send message
+-	"mqttWrite"(header := INT_TO_BYTE("mqttGlobals".MQTTSUBSCRIBE),
+-	            length := #length - 5);
+-END_FUNCTION
+-(**************************************************************)
+-
+-
+-(*
+-   **********************************************************************************
+-   MQtt unsubscribe method
+-   Please refer to http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html
+-   Section 3.8 UNSUBSCRIBE - unsubscribe from topics
+-   **********************************************************************************
+-*)
+-FUNCTION "mqttUNSUBSCRIBE" : Void
+-TITLE = 'MQTT Unsubscribe Function'
++FUNCTION "mqttPUBLISH" : Int
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
+    VAR_INPUT 
+-      topic : String;
+-   END_VAR
+-
+-   VAR_TEMP 
+-      length : Int;
+-      l_topic : String[50];
+-      thisMessageID : Int;
+-      fixedHeader : Byte;
++      mqttParameters : "MqttPubParUdt";
+    END_VAR
+ 
+-
+-BEGIN
+-	
+-	// if there's no MQTT connection return
+-	IF "mqttData"._state = "mqttGlobals".MQTT_DISCONNECTED THEN
+-	  RETURN;
+-	END_IF;
+-	
+-	#l_topic := #topic;
+-	
+-	// check if topic is not longer than 119 bytes
+-	IF (128 < (9 + LEN(#l_topic))) THEN
+-	  RETURN;
+-	END_IF;
+-	
+-	#length := 5;
+-	
+-	// set message ID
+-	#thisMessageID := "mqttGetNextMessageID"();
+-	"mqttData".buffer[#length] := DWORD_TO_BYTE(SHR(IN := INT_TO_DWORD(#thisMessageID), N := 8));
+-	#length := #length + 1;
+-	"mqttData".buffer[#length] := INT_TO_BYTE(#thisMessageID) AND B#16#FF;
+-	#length := #length + 1;
+-	
+-	// set topic        
+-	#length := "mqttWriteString"(str := #l_topic, pos := #length);
+-	
+-	#fixedHeader := INT_TO_BYTE("mqttGlobals".MQTTUNSUBSCRIBE);
+-	// Set Header Flags for duplicates, qos level and retain
+-	#fixedHeader := #fixedHeader OR SHL(IN := BOOL_TO_BYTE(true), N := 1);
+-	
+-	// write header and send message
+-	"mqttWrite"(header := #fixedHeader,
+-	            length := #length - 5);
+-END_FUNCTION
+-(**************************************************************)
+-
+-
+-(* 
+-   **********************************************************************************
+-   MQtt publish method
+-   Please refer to http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html
+-   Section 3.3 PUBLISH - publish message
+-   RETURN: message ID (if Qos1 or Qos2 was selected, else 0)
+-   **********************************************************************************
+-*)
+-FUNCTION "mqttPUBLISH" : Int
+-TITLE = MQTT Publish Function
+-{ S7_Optimized_Access := 'FALSE' }
+-AUTHOR : Brand
+-VERSION : 1.0
+-//ported by Groschke to TIA V13
+-   VAR_INPUT 
+-      topic : String;
+-      messageid : Int;
+-      payload : Any;
+-      payloadLength : Int;
+-      qos : Int;
+-      "retain" : Bool;
+-      duplicate : Bool;
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
+    END_VAR
+ 
+    VAR_TEMP 
+@@ -403,10 +305,7 @@ VERSION : 1.0
+       tdata : Any;
+       pdata AT tdata : "UDT_STRUCTANYPTR";
+       ret : Int;
+-      ptrBuffer : Any;
+-      structPtrBuffer AT ptrBuffer : "UDT_STRUCTANYPTR";
+-      ptrPayload : Any;
+-      structPtrPayload AT ptrPayload : "UDT_STRUCTANYPTR";
++      lengthPayload : Int;
+    END_VAR
+ 
+ 
+@@ -415,9 +314,9 @@ BEGIN
+ 	#mqttPUBLISH := 0;
+ 	
+ 	// if there's no MQTT connection return an error code
+-	IF "mqttData"._state = "mqttGlobals".MQTT_DISCONNECTED THEN
+-	    #mqttPUBLISH := -1;
+-	    RETURN;
++	IF #mqttData._state = "mqttGlobals".MQTT_DISCONNECTED THEN
++	  #mqttPUBLISH := -1;
++	  RETURN;
+ 	END_IF;
+ 	
+ 	// Fixed header, byte 1
+@@ -430,7 +329,7 @@ BEGIN
+ 	// set package type in header
+ 	#fixedHeader := INT_TO_BYTE("mqttGlobals".MQTTPUBLISH);
+ 	// Set Header Flags for duplicates, qos level and retain
+-	#fixedHeader := #fixedHeader OR SHL(IN := BOOL_TO_BYTE(#duplicate), N := 3) OR SHL(IN := INT_TO_BYTE(#qos), N := 1) OR BOOL_TO_BYTE(#retain);
++	#fixedHeader := #fixedHeader OR SHL(IN := BOOL_TO_BYTE(#mqttParameters.mqttPubDuplicate), N := 3) OR SHL(IN := INT_TO_BYTE(#mqttParameters.mqttPubQoS), N := 1) OR BOOL_TO_BYTE(#mqttParameters.mqttPubRetain);
+ 	
+ 	// Fixed header, byte 2
+ 	// +--------+---+---+---+---+---+---+---+---+
+@@ -455,10 +354,10 @@ BEGIN
+ 	
+ 	// point to buffer area in front of fixed header (5 bytes)
+ 	// copy topic to buffer
+-	#holdstring := #topic;
++	#holdstring := #mqttParameters.mqttPubTopic;
+ 	#length := 5;
+ 	
+-	#length := "mqttWriteString"(str := #holdstring, pos := #length);
++	#length := "mqttWriteString"(str := #holdstring, pos := #length, mqttData:=#mqttData);
+ 	
+ 	// MessageID  
+ 	// Variable header, byte 9
+@@ -471,20 +370,20 @@ BEGIN
+ 	// +--------+-------------------------------+
+ 	
+ 	// set MessageID if qos level 1 or 2
+-	IF (#qos = "mqttGlobals".MQTTQOS1) OR (#qos = "mqttGlobals".MQTTQOS2) THEN
+-	    IF #messageid > 0 THEN
+-	        #thisMessageID := #messageid;
+-	    ELSE
+-	        #thisMessageID := "mqttGetNextMessageID"();
+-	    END_IF;
+-	    
+-	    // insert message ID
+-	    "mqttData".buffer[#length] := DWORD_TO_BYTE(SHR(IN := INT_TO_DWORD(#thisMessageID), N := 8));
+-	    #length := #length + 1;
+-	    "mqttData".buffer[#length] := INT_TO_BYTE(#thisMessageID) AND B#16#FF;
+-	    #length := #length + 1;
+-	    
+-	    #mqttPUBLISH := #thisMessageID;
++	IF (#mqttParameters.mqttPubQoS = "mqttGlobals".MQTTQOS1) OR (#mqttParameters.mqttPubQoS = "mqttGlobals".MQTTQOS2) THEN
++	    IF #mqttParameters.mqttPubMessageId > 0 THEN
++	        #thisMessageID := #mqttParameters.mqttPubMessageId;
++	  ELSE
++	      #thisMessageID := "mqttGetNextMessageID"(mqttData:=#mqttData);
++	  END_IF;
++	  
++	  // insert message ID
++	  #mqttData.buffer[#length] := DWORD_TO_BYTE(SHR(IN := INT_TO_DWORD(#thisMessageID), N := 8));
++	  #length := #length + 1;
++	  #mqttData.buffer[#length] := INT_TO_BYTE(#thisMessageID) AND B#16#FF;
++	  #length := #length + 1;
++	  
++	  #mqttPUBLISH := #thisMessageID;
+ 	END_IF;
+ 	
+ 	// Payload
+@@ -497,57 +396,133 @@ BEGIN
+ 	
+ 	// copy payload to buffer
+ 	//ptrBuffer := mqttData.buffer[length];
+-	#ptrPayload := #payload;
+-	
+-	IF #payloadLength > 0 THEN
+-	    FOR #i := 0 TO #payloadLength - 1 DO
+-	        #ret := BLKMOV(SRCBLK := #ptrPayload, DSTBLK => "mqttData".buffer[#length]);
+-	        // what is this?!
+-	        IF #ret <> 0 THEN
+-	            //m23.2 := true;
+-	            //return
+-	            ;
+-	        END_IF;
+-	        #length := #length + 1;
+-	        #structPtrPayload.ByteAddressLSB := INT_TO_WORD(WORD_TO_INT(#structPtrPayload.ByteAddressLSB) + 8);
+-	    END_FOR;
++	IF #mqttParameters.mqttPubPayloadLength > 0 THEN
++	    Strg_TO_Chars(Strg:=#mqttParameters.mqttPubPayload,
++	                  pChars:=#length,
++	                  Cnt=>#lengthPayload,
++	                  Chars:=#mqttData.buffer);
++	   #length := #lengthPayload + #length;
+ 	END_IF;
+ 	
+ 	// copy header information (includes remaining length calculation)
+ 	// and trigger tcpsend
+ 	"mqttWrite"(header := #fixedHeader,
+-	            length := #length - 5);
++	            length := #length - 5,
++	            mqttData:=#mqttData);
++	
+ END_FUNCTION
+-(**************************************************************)
+ 
++FUNCTION "mqttSUBSCRIBE" : Void
++{ S7_Optimized_Access := 'TRUE' }
++AUTHOR : Brand
++VERSION : 1.0
++   VAR_INPUT 
++      topic : String[254];
++      topicQos : Int;
++   END_VAR
+ 
+-(* 
+-   **********************************************************************************
+-   MQtt PUBACK method
+-   Please refer to http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html
+-   Section 3.4 PUBACK - Publish acknowledgement
+-   RETURN: none
+-   **********************************************************************************
+-*)
+-FUNCTION "mqttPUBACK" : Void
+-TITLE = 'MQTT Publish Acknowledge QoS1 Function'
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
++
++   VAR_TEMP 
++      length : Int;
++      l_topic : String[50];
++      thisMessageID : Int;
++   END_VAR
++
++
++BEGIN
++	
++	// if there's no MQTT connection return
++	IF #mqttData._state = "mqttGlobals".MQTT_DISCONNECTED THEN
++	  RETURN;
++	END_IF;
++	
++	#l_topic := #topic;
++	
++	// check if topic is not longer than 119 bytes
++	IF (128 < (9 + LEN(#l_topic))) THEN
++	  RETURN;
++	END_IF;
++	
++	#length := 5;
++	
++	// set message ID
++	#thisMessageID := "mqttGetNextMessageID"(mqttData:=#mqttData);
++	#mqttData.buffer[#length] := DWORD_TO_BYTE(SHR(IN := INT_TO_DWORD(#thisMessageID), N := 8));
++	#length := #length + 1;
++	#mqttData.buffer[#length] := INT_TO_BYTE(#thisMessageID) AND B#16#FF;
++	#length := #length + 1;
++	
++	// set topic                
++	#length := "mqttWriteString"(str := #l_topic, pos := #length, mqttData:=#mqttData);
++	
++	// set topic qos
++	#mqttData.buffer[#length] := INT_TO_BYTE(#topicQos);
++	#length := #length + 1;
++	
++	// write header and send message
++	"mqttWrite"(header := INT_TO_BYTE("mqttGlobals".MQTTSUBSCRIBE),
++	            length := #length - 5,
++	            mqttData:=#mqttData);
++	
++END_FUNCTION
++
++FUNCTION "mqttUNSUBSCRIBE" : Void
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
+    VAR_INPUT 
+-      packetIdMSB : Byte;
+-      packetIdLSB : Byte;
++      topic : String[254];
++   END_VAR
++
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
++
++   VAR_TEMP 
++      length : Int;
++      l_topic : String[50];
++      thisMessageID : Int;
++      fixedHeader : Byte;
+    END_VAR
+ 
+ 
+ BEGIN
+-	  "mqttData".buffer[0] := INT_TO_BYTE("mqttGlobals".MQTTPUBACK);
+-	  "mqttData".buffer[1] := 2;
+-	  "mqttData".buffer[2] := #packetIdMSB;
+-	  "mqttData".buffer[3] := #packetIdLSB;
+-	  "mqttSendTCP"(offset := 0,
+-	                size := 4);
+-	  "mqttData".lastOutActivity := "mqttData".runTime;
+-	  
++	
++	// if there's no MQTT connection return
++	IF #mqttData._state = "mqttGlobals".MQTT_DISCONNECTED THEN
++	  RETURN;
++	END_IF;
++	
++	#l_topic := #topic;
++	
++	// check if topic is not longer than 119 bytes
++	IF (128 < (9 + LEN(#l_topic))) THEN
++	  RETURN;
++	END_IF;
++	
++	#length := 5;
++	
++	// set message ID
++	#thisMessageID := "mqttGetNextMessageID"(mqttData:=#mqttData);
++	#mqttData.buffer[#length] := DWORD_TO_BYTE(SHR(IN := INT_TO_DWORD(#thisMessageID), N := 8));
++	#length := #length + 1;
++	#mqttData.buffer[#length] := INT_TO_BYTE(#thisMessageID) AND B#16#FF;
++	#length := #length + 1;
++	
++	// set topic        
++	#length := "mqttWriteString"(str := #l_topic, pos := #length, mqttData:=#mqttData);
++	
++	#fixedHeader := INT_TO_BYTE("mqttGlobals".MQTTUNSUBSCRIBE);
++	// Set Header Flags for duplicates, qos level and retain
++	#fixedHeader := #fixedHeader OR SHL(IN := BOOL_TO_BYTE(true), N := 1);
++	
++	// write header and send message
++	"mqttWrite"(header := #fixedHeader,
++	            length := #length - 5,
++	            mqttData:=#mqttData);
++	
+ END_FUNCTION
+-(**************************************************************)
+\ No newline at end of file
++
+diff --git a/MQTT_Receiving.scl b/MQTT_Receiving.scl
+index cf55a5a..b5dac2c 100644
+--- a/MQTT_Receiving.scl
++++ b/MQTT_Receiving.scl
+@@ -1,32 +1,37 @@
+-﻿FUNCTION "mqttAvailable" : Bool
+-TITLE = 'MQTT mqttAvailable Helper Function'
++﻿FUNCTION "mqttReadByte" : Byte
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
++
+ 
+ BEGIN
+-	#mqttAvailable := ("mqttData".pRead <> "mqttData".pRec) OR "mqttData".RecBufFull;
++	#mqttReadByte := #mqttData.tcpRecBuf[#mqttData.pRead];
++	#mqttData.pRead := #mqttData.pRead + 1;
++	IF (#mqttData.pRead >= "mqttGlobals".TCP_RECVBUFFERSIZE) THEN
++	    #mqttData.pRead := 0;
++	END_IF;
++	#mqttData.RecBufFull := false;
++	
+ END_FUNCTION
+-(**************************************************************)
+ 
+-FUNCTION "mqttReadByte" : Byte
+-TITLE = 'MQTT mqttReadByte Helper Function'
++FUNCTION "mqttAvailable" : Bool
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
++
+ 
+ BEGIN
+-	#mqttReadByte := "mqttData".tcpRecBuf["mqttData".pRead];
+-	"mqttData".pRead := "mqttData".pRead + 1;
+-	IF ("mqttData".pRead >= "mqttGlobals".TCP_RECVBUFFERSIZE) THEN
+-	  "mqttData".pRead := 0;
+-	END_IF;
+-	"mqttData".RecBufFull := false;
++	#mqttAvailable := (#mqttData.pRead <> #mqttData.pRec) OR #mqttData.RecBufFull;
++	
+ END_FUNCTION
+-(**************************************************************)
+ 
+ FUNCTION "mqttReadByteToBuf" : Int
+-TITLE = 'MQTT mqttReadByteToBuf Helper Function'
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
+@@ -34,6 +39,10 @@ VERSION : 1.0
+       pos : Int;
+    END_VAR
+ 
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
++
+    VAR_TEMP 
+       cur_index : Int;
+       readed : Byte;
+@@ -42,15 +51,14 @@ VERSION : 1.0
+ 
+ BEGIN
+ 	#cur_index := #pos;
+-	#readed := "mqttReadByte"();
+-	"mqttData".buffer[#cur_index] := #readed;
++	#readed := "mqttReadByte"(mqttData:=#mqttData);
++	#mqttData.buffer[#cur_index] := #readed;
+ 	#cur_index := #cur_index + 1;
+ 	#mqttReadByteToBuf := #cur_index;
++	
+ END_FUNCTION
+-(**************************************************************)
+ 
+ FUNCTION_BLOCK "mqttPacketReader"
+-TITLE = 'MQTT mqttPacketReader Helper Function'
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
+@@ -62,6 +70,7 @@ VERSION : 1.0
+ 
+    VAR_IN_OUT 
+       iBegin : Bool;
++      mqttData : "MqttDataUdt";
+    END_VAR
+ 
+    VAR 
+@@ -80,11 +89,11 @@ VERSION : 1.0
+ BEGIN
+ 	CASE (#State) OF
+ 	  -1: // Alternative to original blocking call
+-	    IF (("mqttData".runTime - #previousTime) >= "mqttGlobals".MQTT_SOCKET_TIMEOUT) THEN
++	      IF ((#mqttData.runTime - #previousTime) >= "mqttGlobals".MQTT_SOCKET_TIMEOUT) THEN
+ 	      #xDone := true;
+ 	      #result := 0;
+ 	      #State := 0;
+-	    ELSIF "mqttAvailable"() THEN
++	  ELSIF "mqttAvailable"(mqttData:=#mqttData) THEN
+ 	      #State := #oldState;
+ 	    END_IF;
+ 	  0: // Wait for Start
+@@ -97,23 +106,23 @@ BEGIN
+ 	    END_IF;
+ 	  1:    // Getting first byte
+ 	    #oldState := 1;
+-	    IF "mqttAvailable"() THEN
+-	      #_len := "mqttReadByteToBuf"(pos := #_len);
+-	      #isPublish := BYTE_TO_INT("mqttData".buffer[0] AND B#16#F0) = "mqttGlobals".MQTTPUBLISH;
++	    IF "mqttAvailable"(mqttData:=#mqttData) THEN
++	        #_len := "mqttReadByteToBuf"(pos := #_len, mqttData:=#mqttData);
++	      #isPublish := BYTE_TO_INT(#mqttData.buffer[0] AND B#16#F0) = "mqttGlobals".MQTTPUBLISH;
+ 	      #multiplier := 1;
+ 	      #length := 0;
+ 	      #digit := B#16#00;
+ 	      #start := 0;
+ 	      #State := 2;
+ 	    ELSE
+-	      #previousTime := "mqttData".runTime;
++	        #previousTime := #mqttData.runTime;
+ 	      #State := -1;
+ 	    END_IF;
+ 	  2: // do..while((digit & 128) != 0) loop equivalent
+ 	    #oldState := 2;
+-	    IF "mqttAvailable"() THEN
+-	      #digit := "mqttReadByte"();
+-	      "mqttData".buffer[#_len] := #digit;
++	    IF "mqttAvailable"(mqttData:=#mqttData) THEN
++	        #digit := "mqttReadByte"(mqttData:=#mqttData);
++	      #mqttData.buffer[#_len] := #digit;
+ 	      #_len := #_len + 1;
+ 	      #length := #length + (BYTE_TO_DINT(#digit AND B#16#7F) * #multiplier);
+ 	      #multiplier := #multiplier * 128;
+@@ -126,26 +135,26 @@ BEGIN
+ 	        END_IF;
+ 	      END_IF;
+ 	    ELSE
+-	      #previousTime := "mqttData".runTime;
++	        #previousTime := #mqttData.runTime;
+ 	      #State := -1;
+ 	    END_IF;
+ 	  3:    // First Publish Byte
+ 	    #oldState := 3;
+-	    IF "mqttAvailable"() THEN
+-	      #_len := "mqttReadByteToBuf"(pos := #_len);
++	    IF "mqttAvailable"(mqttData:=#mqttData) THEN
++	        #_len := "mqttReadByteToBuf"(pos := #_len, mqttData:=#mqttData);
+ 	      #State := 4;
+ 	    ELSE
+-	      #previousTime := "mqttData".runTime;
++	        #previousTime := #mqttData.runTime;
+ 	      #State := -1;
+ 	    END_IF;
+ 	  4:    // Second Publish Byte
+ 	    #oldState := 4;
+-	    IF "mqttAvailable"() THEN
+-	      #_len := "mqttReadByteToBuf"(pos := #_len);
++	    IF "mqttAvailable"(mqttData:=#mqttData) THEN
++	        #_len := "mqttReadByteToBuf"(pos := #_len, mqttData:=#mqttData);
+ 	      #start := 2;
+ 	      #State := 5;
+ 	    ELSE
+-	      #previousTime := "mqttData".runTime;
++	        #previousTime := #mqttData.runTime;
+ 	      #State := -1;
+ 	    END_IF;
+ 	  5:    // Read rest of Packet (for loop replacement)
+@@ -158,18 +167,19 @@ BEGIN
+ 	      #xDone := true;
+ 	      #result := #_len;
+ 	      #State := 0;
+-	    ELSIF "mqttAvailable"() THEN
+-	      #digit := "mqttReadByte"();
++	  ELSIF "mqttAvailable"(mqttData:=#mqttData) THEN
++	      #digit := "mqttReadByte"(mqttData:=#mqttData);
+ 	      IF (#_len < "mqttGlobals".TCP_MAXRECVSIZE) THEN
+-	        "mqttData".buffer[#_len] := #digit;
++	          #mqttData.buffer[#_len] := #digit;
+ 	      END_IF;
+ 	      #_len := #_len + 1;
+ 	      //loop
+ 	      #start := #start + 1;
+ 	    ELSE
+-	      #previousTime := "mqttData".runTime;
++	        #previousTime := #mqttData.runTime;
+ 	      #State := -1;
+ 	    END_IF;
+ 	END_CASE;
++	
+ END_FUNCTION_BLOCK
+-(**************************************************************)
+\ No newline at end of file
++
+diff --git a/MQTT_Sending.scl b/MQTT_Sending.scl
+index 9ee9e85..33ae351 100644
+--- a/MQTT_Sending.scl
++++ b/MQTT_Sending.scl
+@@ -1,44 +1,48 @@
+ ﻿FUNCTION "mqttSendTCP" : Void
+-TITLE = 'MQTT mqttSendTCP Helper Function'
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
+-//ported by Groschke to TIA V13
+    VAR_INPUT 
+       offset : Int;
+       size : Int;
+    END_VAR
+ 
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
++
+    VAR_TEMP 
+       i : Int;
+    END_VAR
+ 
+ 
+ BEGIN
+-	IF "mqttData".sendSize + #size <= "mqttGlobals".TCP_SENDBUFFERSIZE THEN
+-	    FOR #i := 0 TO #size - 1 DO
+-	      "mqttData".tcpSendBuf[MIN(IN1 := (#i + "mqttData".sendSize), IN2 := "mqttGlobals".TCP_SENDBUFFERSIZE)] := "mqttData".buffer[#offset + #i];
+-	    END_FOR;
+-	    "mqttData".sendSize := "mqttData".sendSize + #size;
+-	    "mqttData".reqSend := true;
+-	  ELSE
+-	    "mqttData".tcp_sendBufferFull := true;
+-	  END_IF;
+-	  
++	IF #mqttData.sendSize + #size <= "mqttGlobals".TCP_SENDBUFFERSIZE THEN
++	  FOR #i := 0 TO #size - 1 DO
++	      #mqttData.tcpSendBuf[MIN(IN1 := (#i + #mqttData.sendSize), IN2 := "mqttGlobals".TCP_SENDBUFFERSIZE)] := #mqttData.buffer[#offset + #i];
++	  END_FOR;
++	  #mqttData.sendSize := #mqttData.sendSize + #size;
++	  #mqttData.reqSend := true;
++	ELSE
++	    #mqttData.tcp_sendBufferFull := true;
++	END_IF;
++	
++	
+ END_FUNCTION
+-(**************************************************************)
+ 
+ FUNCTION "mqttWrite" : Void
+-TITLE = 'MQTT mqttWrite Helper Function'
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
+-//ported by Groschke to TIA V13
+    VAR_INPUT 
+       header : Byte;
+       length : Int;
+    END_VAR
+ 
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
++
+    VAR_TEMP 
+       lenBuf : Array[0..3] of Byte;
+       llen : Int;
+@@ -66,24 +70,24 @@ BEGIN
+ 	  #llen := #llen + 1;
+ 	UNTIL (#_len <= 0) // do..while(len>0)
+ 	END_REPEAT;
+-	"mqttData".buffer[4 - #llen] := #header;
++	#mqttData.buffer[4 - #llen] := #header;
+ 	FOR #i := 0 TO #llen - 1 DO
+-	  "mqttData".buffer[5 - #llen + #i] := #lenBuf[#i];
++	    #mqttData.buffer[5 - #llen + #i] := #lenBuf[#i];
+ 	END_FOR;
+ 	"mqttSendTCP"(offset := 4 - #llen,
+-	              size := #length + 1 + #llen);
+-	"mqttData".lastOutActivity := "mqttData".runTime;
++	              size := #length + 1 + #llen,
++	              mqttData:=#mqttData);
++	
++	#mqttData.lastOutActivity := #mqttData.runTime;
++	
+ END_FUNCTION
+-(**************************************************************)
+ 
+ FUNCTION "mqttWriteString" : Int
+-TITLE = MQTT mqttWriteString Helper Function
+ { S7_Optimized_Access := 'FALSE' }
+ AUTHOR : Brand
+ VERSION : 1.0
+-//ported by Groschke to TIA V13
+    VAR_INPUT 
+-      str : String;
++      str : String[254];
+       _str AT str : Struct
+          length : Byte;
+          act_length : Byte;
+@@ -92,6 +96,10 @@ VERSION : 1.0
+       pos : Int;
+    END_VAR
+ 
++   VAR_IN_OUT 
++      mqttData : "MqttDataUdt";
++   END_VAR
++
+    VAR_TEMP 
+       newPos : Int;
+       i : DInt;
+@@ -104,15 +112,15 @@ BEGIN
+ 	#i := 0;
+ 	
+ 	FOR #j := 1 TO BYTE_TO_INT(#_str.act_length) DO
+-	    "mqttData".buffer[#newPos] := #_str.str[#j];
+-	    #newPos := #newPos + 1;
+-	    #i := #i + 1;
++	    #mqttData.buffer[#newPos] := #_str.str[#j-1];
++	  #newPos := #newPos + 1;
++	  #i := #i + 1;
+ 	END_FOR;
+ 	
+-	"mqttData".buffer[#newPos - 2 - #i] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#i), N := 8));
+-	"mqttData".buffer[#newPos - 1 - #i] := DINT_TO_BYTE(#i);
++	#mqttData.buffer[#newPos - 2 - #i] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#i), N := 8));
++	#mqttData.buffer[#newPos - 1 - #i] := DINT_TO_BYTE(#i);
+ 	
+ 	#mqttWriteString := #newPos;
++	
+ END_FUNCTION
+ 
+-
+-- 
+2.33.0.windows.2
+

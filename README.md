@@ -42,26 +42,24 @@ Fixed MQTT Sparkplug message schema:
   -> timestamp: 64 bit Integer (UNIX time)
 
 ## Testing the project
-Open TIA Portal and "Add new device", then you have two options.
 
-First option: import source files
-1. Download all source files
-2. TIA Portal Folder "External source files" -> "Add new external file"
-3. Select all downloaded files and import
-4. Select all imported files -> Right mouse click: "Generate blocks from source"
-5. Open OB1 and call "mqttSparkplugCall" FB, by adding this lines:
+1. Clone this repo to your local computer
+2. Clone the MQTT library: https://github.com/ChristofGroschke/MQTT-Siemens-S7-1500
+3. Patch the library for Sparkplug support: git am 0001-Add-MQTT-Sparkplug-functionality.patch
+4. Copy the files MQTT_Functions.scl, MQTT_Receiving.scl and MQTT_Sending.scl from the MQTT library repo into this repo
+
+5. Open TIA Portal and "Add new device".
+
+Import source files into TIA Portal
+6. TIA Portal Folder "External source files" -> "Add new external file"
+7. Select all files and import
+8. Select all imported files -> Right mouse click: "Generate blocks from source"
+9. Open OB1 and call "mqttSparkplugCall" FB, by adding this lines:
     ```
     //Call mqttSparkplugCall FB
     "mqttSparkplugCallDB"();
     ```
-Second option: import library
-1. Download compressed library file "MqttSparkplug.zal16"
-2. TIA Portal Tab "Libraries" -> "Global libraries" -> "Open global library"
-3. Drag and drop the files in your project structure
-4. Open OB1 and call "mqttSparkplugCall" FB, by adding this lines:
-    ```
-    //Call mqttSparkplugCall FB
-    "mqttSparkplugCallDB"();
+
     ```
 To test this project you can use a HiveMQ broker in a docker container, just chance the IP address in the "ControllingMqttSparkplug" data block. 
 All the relevant parameters for connecting to the MQTT broker and for publishing messages are found in the "ControllingMqttSparkplug" data block.
