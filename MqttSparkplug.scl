@@ -1,0 +1,170 @@
+﻿DATA_BLOCK "mqttDataSparkplug"
+{ DB_Accessible_From_OPC_UA := 'FALSE' ;
+ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+   VAR 
+      Data { S7_SetPoint := 'False'} : "MqttDataUdt";
+      tcpSendBuf { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Array[0..65535] of Byte;
+   END_VAR
+
+
+BEGIN
+
+END_DATA_BLOCK
+
+DATA_BLOCK "ControllingMqttSparkplug"
+{ DB_Accessible_From_OPC_UA := 'FALSE' ;
+ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+   VAR 
+      con : Bool;
+      discon : Bool;
+      pub : Bool;
+      ConnectionParameters { S7_SetPoint := 'False'} : "ConParUdt";
+      MqttParameters : "MqttParUdt";
+      MqttPubParameters : "MqttPubParSparkplugUdt";
+      MqttMetrik : Array[0..2] of "MqttPubMetricsSparkplugUdt";
+   END_VAR
+
+
+BEGIN
+   ConnectionParameters.connectionID := 21;
+   ConnectionParameters.ipBlock1 := 172;
+   ConnectionParameters.ipBlock2 := 27;
+   ConnectionParameters.ipBlock3 := 5;
+   ConnectionParameters.ipBlock4 := 43;
+   ConnectionParameters.ipPort := 1883;
+   MqttParameters.mqttClientID := 'plcSparkplug';
+   MqttParameters.mqttWithUsername := true;
+   MqttParameters.mqttWithPassword := true;
+   MqttParameters.mqttCleanSession := true;
+   MqttParameters.mqttWithWill := true;
+   MqttParameters.mqttWillQos := 0;
+   MqttParameters.mqttWillRetain := false;
+   MqttParameters.mqttWillTopic := 'spBv1.0/Factory/NDEATH/Plc';
+   MqttParameters.mqttWillData := 'offline';
+   MqttParameters.mqttUsername := 'admin';
+   MqttParameters.mqttPassword := 'hivemq';
+   MqttPubParameters.mqttPubQoS := 1;
+   MqttPubParameters.mqttSparkplugGroupId := 'Factory';
+   MqttPubParameters.mqttSparkplugEdgeNodeId := 'Plc';
+   MqttMetrik[0]."Name" := 'gtyp_HBW/Horizontal_Axis/di_Actual_Position';
+
+END_DATA_BLOCK
+
+DATA_BLOCK "ExampleData"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+   VAR 
+      Horizontal_Axis : Struct
+         di_Actual_Position : DInt;
+         di_Increment : DInt;
+      END_STRUCT;
+      Workpiece : Struct
+         s_id : String;
+      END_STRUCT;
+   END_VAR
+
+
+BEGIN
+
+END_DATA_BLOCK
+
+FUNCTION_BLOCK "mqttSparkplugCall"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR 
+      fcon : Bool;
+      fdiscon : Bool;
+   END_VAR
+   VAR DB_SPECIFIC
+      fpub : Bool;
+      myPublishMessageID : Int := 0;
+      pubAckReceived : Bool := 0;
+   END_VAR
+   VAR 
+      mqttPublishSparkplug_Instance : "mqttSparkplugPublish";
+      mqttSparkplug_Instance : "mqttSparkplug";
+   END_VAR
+
+   VAR_TEMP 
+      retValMqttSparkplugPrepMetrik : Int;
+   END_VAR
+
+
+BEGIN
+	#mqttSparkplug_Instance(connectionParameter:="ControllingMqttSparkplug".ConnectionParameters,
+	                        mqttData:="mqttDataSparkplug".Data);
+	// Manual connect. Make con high
+	IF "ControllingMqttSparkplug".con AND NOT #fcon THEN
+	    "ControllingMqttSparkplug".MqttParameters.mqttWillTopic := 'spBv1.0/Factory/NDEATH/Plc';
+	    //fill out metric name for birth message
+	      #retValMqttSparkplugPrepMetrik :=
+	      "mqttSparkplugPrepMetrik"(MetricValue := "ExampleData".Horizontal_Axis.di_Actual_Position,
+	                                  MqttMetrik := "ControllingMqttSparkplug".MqttMetrik[0]);
+	      #retValMqttSparkplugPrepMetrik :=
+	      "mqttSparkplugPrepMetrik"(MetricValue := "ExampleData".Horizontal_Axis.di_Increment,
+	                                MqttMetrik := "ControllingMqttSparkplug".MqttMetrik[1]);
+	      #retValMqttSparkplugPrepMetrik :=
+	      "mqttSparkplugPrepMetrik"(MetricValue := "ExampleData".Workpiece.s_id,
+	                                MqttMetrik := "ControllingMqttSparkplug".MqttMetrik[2]);
+	    
+	    "mqttCONNECT"(mqttParameters := "ControllingMqttSparkplug".MqttParameters,
+	                  mqttData := "mqttDataSparkplug".Data);
+	    //copy to tcp send buffer
+	    MOVE_BLK(IN:= "mqttDataSparkplug".Data.tcpSendBuf[0],
+	             COUNT:=512,
+	             OUT=>"mqttDataSparkplug".tcpSendBuf[0]);
+	    
+	END_IF;
+	#fcon := "ControllingMqttSparkplug".con;
+	
+	// Make discon high to disconnect
+	IF "ControllingMqttSparkplug".discon AND NOT #fdiscon THEN
+	    "mqttDISCONNECT"(mqttData := "mqttDataSparkplug".Data);
+	    //copy to tcp send buffer
+	    MOVE_BLK(IN := "mqttDataSparkplug".Data.tcpSendBuf[0],
+	             COUNT := 512,
+	             OUT => "mqttDataSparkplug".tcpSendBuf[0]);
+	END_IF;
+	#fdiscon := "ControllingMqttSparkplug".discon;
+	
+	// Make pub high to publish
+	IF "ControllingMqttSparkplug".pub AND NOT #fpub THEN
+	    //prepare data
+	    #retValMqttSparkplugPrepMetrik :=
+	    "mqttSparkplugPrepMetrik"(MetricValue := "ExampleData".Horizontal_Axis.di_Actual_Position,
+	                              MqttMetrik := "ControllingMqttSparkplug".MqttMetrik[0]);
+	    #retValMqttSparkplugPrepMetrik :=
+	    "mqttSparkplugPrepMetrik"(MetricValue := "ExampleData".Horizontal_Axis.di_Increment,
+	                              MqttMetrik := "ControllingMqttSparkplug".MqttMetrik[1]);
+	    #retValMqttSparkplugPrepMetrik :=
+	    "mqttSparkplugPrepMetrik"(MetricValue := "ExampleData".Workpiece.s_id,
+	                              MqttMetrik := "ControllingMqttSparkplug".MqttMetrik[2]);
+	END_IF;
+	#fpub := "ControllingMqttSparkplug".pub;
+	#mqttPublishSparkplug_Instance(mqttParameters:= "ControllingMqttSparkplug".MqttPubParameters,
+	                               RetVal=>#myPublishMessageID,
+	                               mqttData:="mqttDataSparkplug".Data,
+	                               mqttMetric:="ControllingMqttSparkplug".MqttMetrik,
+	                               tcpSendBuf:="mqttDataSparkplug".tcpSendBuf,
+	                               enable:= "ControllingMqttSparkplug".pub);
+	
+	
+	
+END_FUNCTION_BLOCK
+
+DATA_BLOCK "mqttSparkplugCallDB"
+{ DB_Accessible_From_OPC_UA := 'FALSE' ;
+ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+"mqttSparkplugCall"
+
+BEGIN
+
+END_DATA_BLOCK
+

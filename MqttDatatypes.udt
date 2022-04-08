@@ -1,0 +1,119 @@
+﻿TYPE "MqttDataUdt"
+VERSION : 0.1
+   STRUCT
+      tcpRecBuf : Array[0..1024] of Byte;
+      pRec : Int;
+      pRead : Int;
+      RecBufFull : Bool;
+      tcpSendBuf : Array[0..512] of Byte;
+      reqSend : Bool;
+      sendSize : Int;
+      buffer : Array[0..512] of Byte;
+      nextMsgId : Int;
+      _state : Int := -1;
+      packet_state : Int;
+      pingOutstanding : Bool;
+      lastInActivity : Time;
+      lastOutActivity : Time;
+      runTime : Time;
+      ethTCPConnected : Bool;
+      mqttErrorCode : Int := 0;
+      recPublishPacketID : Int := 0;
+      tcp_sendBufferFull : Bool := FALSE;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "MqttPubPayloadValueSparkplug"
+VERSION : 0.1
+   STRUCT
+      Datatype : Byte;   // Int16: 16#02, Int32: 16#03, Float: 16#09, Boolean: 16#0B, String: 16#0C
+      ValueString : String;   // This field is used if datatype is String
+      ValueLWord : LWord;   // This fiels is used for all other datatypes
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "MqttPubMetricsSparkplugUdt"
+VERSION : 0.1
+   STRUCT
+      "Name" : String;
+      MetricValue { S7_SetPoint := 'False'} : "MqttPubPayloadValueSparkplug";
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "ConParUdt"
+VERSION : 0.1
+   STRUCT
+      connectionID : Int;   // Unique connection identifier
+      ipBlock1 : Int;   // IPv4 address
+      ipBlock2 : Int;   // IPv4 address
+      ipBlock3 : Int;   // IPv4 address
+      ipBlock4 : Int;   // IPv4 address
+      ipPort : Int;   // Port of the mqtt broker
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "MqttParUdt"
+VERSION : 0.1
+   STRUCT
+      mqttClientID : String[23];
+      mqttWithUsername : Bool;
+      mqttWithPassword : Bool;
+      mqttCleanSession : Bool;
+      mqttWithWill : Bool;
+      mqttWillQos : Int;
+      mqttWillRetain : Bool;
+      mqttWillTopic : String[50];
+      mqttWillData : String;
+      mqttUsername : String[50];
+      mqttPassword : String[50];
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "MqttPubParSparkplugUdt"
+VERSION : 0.1
+   STRUCT
+      mqttPubTopic : String[254];   // only used for MQTT 3.1.1
+      mqttPubMessageId : Int;   // only used for MQTT 3.1.1
+      mqttPubPayload : String;
+      mqttPubQoS : Int;
+      mqttPubRetain : Bool;
+      mqttPubDuplicate : Bool;
+      mqttSparkplugGroupId : String;   // only used for MQTT Sparkplug
+      mqttSparkplugEdgeNodeId : String;   // only used for MQTT Sparkplug
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "UDT_STRUCTANYPTR"
+VERSION : 0.1
+   STRUCT
+      S7Code : Byte;
+      DataType : Byte;
+      Length : Int;
+      DBNumber : Int;
+      MemoryArea : Byte;
+      ByteAddressMSB : Byte;
+      ByteAddressLSB : Word;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "MqttPubParUdt"
+VERSION : 0.1
+   STRUCT
+      mqttPubTopic : String[254];
+      mqttPubMessageId : Int;
+      mqttPubPayload : String;
+      mqttPubPayloadLength : Int;
+      mqttPubQoS : Int;
+      mqttPubRetain : Bool;
+      mqttPubDuplicate : Bool;
+   END_STRUCT;
+
+END_TYPE
+
